@@ -1,0 +1,2 @@
+I implemented the functions generate_footstep,project_kinematics,get_terrain_height in unitree_mujoco.py for the pipeline described in chapter 10 .
+I used Raiberts Heuristic for generate_footsteps which is used online and accounts for current velocity.In project_kinematics i corrected for circular and lateral clamping (using the hip distance). I also altered config.py setting USE_JOYSTICK to 0.
