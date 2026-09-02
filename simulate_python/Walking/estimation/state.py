@@ -5,26 +5,26 @@ class StateEstimator:
     def __init__(self,mj_model,mj_data):
         self.model=mj_model
         self.data=mj_data
-        
-        self.imu_quat_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_quat")
-        self.imu_gyro_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_gyro")
         self.frame_pos_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "frame_pos")
+        self.imu_quat_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_quat")
         self.frame_vel_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "frame_vel")
+        self.imu_gyro_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SENSOR, "imu_gyro")
 
-    def get_sensor_data(self,sensor_id:int,dim:int) -> np.ndarray:
-        if sensor_id==-1:return np.zeros(dim)
-        adress=self.model.sensor_adr[sensor_id]
-        return self.data.sensordata[adress:adress+dim].copy()
 
     def update(self) -> dict:
-        base_pos=self.get_sensor_data(self.frame_pos_id, 3)
-        base_quat=self.get_sensor_data(self.imu_quat_id, 4)
-        base_vel=self.get_sensor_data(self.frame_vel_id, 3)
-        base_omega=self.get_sensor_data(self.imu_gyro_id, 3)
+        adr=self.model.sensor_adr[self.frame_pos_id]
+        base_pos=self.data.sensordata[adr:adr+3].copy()
 
-        # Removes floating base wich isnt used in calculations
-        joint_pos = self.data.qpos[7:].copy()
-        joint_vel = self.data.qvel[6:].copy()
+        adr=self.model.sensor_adr[self.imu_quat_id]
+        base_quat=self.data.sensordata[adr:adr+4].copy()
 
-        return {"base_pos": base_pos,"base_quat": base_quat,"base_vel": base_vel,
-        "base_omega": base_omega,"joint_pos": joint_pos,"joint_vel": joint_vel}
+        adr=self.model.sensor_adr[self.frame_vel_id]
+        base_vel=self.data.sensordata[adr:adr+3].copy()
+
+        adr=self.model.sensor_adr[self.imu_gyro_id]
+        base_omega=self.data.sensordata[adr:adr+3].copy()
+
+
+        return {
+            "base_pos": base_pos,"base_quat": base_quat,"base_vel": base_vel,"base_omega": base_omega,
+            "joint_pos": self.data.qpos[7:].copy(),"joint_vel": self.data.qvel[6:].copy(),}
