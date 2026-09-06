@@ -34,13 +34,15 @@ class FootstepGenerator:
     def generate_footstep(self,hip_pos:np.ndarray,v_current:np.ndarray,v_desired:np.ndarray,k:np.ndarray,s:int,
                         desired_angle_delta:float,angle:float,max_turn:float)->tuple[np.ndarray, float]:
         # s=1 or s=-1 for left or right
-        x_foot=hip_pos[0]+self.T/2*v_current[0]+k[0]*(v_current[0]-v_desired[0])
-        y_foot=hip_pos[1]+s*self.w/2+self.T/2*v_current[1]+k[1]*(v_current[1]-v_desired[1])
+        x_foot=self.T/2*v_current[0]+k[0]*(v_current[0]-v_desired[0])
+        y_foot=s*self.w/2+self.T/2*v_current[1]+k[1]*(v_current[1]-v_desired[1])
         target_pos=np.array([x_foot,y_foot])
         #Angle
-        angle_delta=np.clip(desired_angle_delta,-max_turn,max_turn)
-        target_angle=angle+angle_delta
+        target_angle=angle+np.clip(desired_angle_delta,-max_turn,max_turn)
+        R=np.array([[np.cos(angle),-np.sin(angle)],[np.sin(angle),np.cos(angle)]])
+        target_pos=hip_pos+R@target_pos
         return target_pos, target_angle
+
     def project_kinematics(self,target_pos:np.ndarray,hip_pos:np.ndarray,s:int,max_step:float,min_width:float)->np.ndarray:
         #Limit maximum reach circular clamping
         if np.linalg.norm(target_pos-hip_pos)>max_step:
@@ -86,3 +88,32 @@ class FootstepGenerator:
         target_z=self.get_terrain_height(mj_model,mj_data,target_pos,z_start)
         target_pos=np.array([target_pos[0],target_pos[1],target_z])
         return target_pos,target_angle
+
+    def nominal_footstep(self,hip_pos:np.ndarray,v_desired:np.ndarray,s:int,
+                        desired_angle_delta:float,angle:float,max_turn:float)->tuple[np.ndarray, float]:
+        # s=1 or s=-1 for left or right
+        x_foot=self.T/2*v_desired[0]
+        y_foot=s*self.w/2+self.T/2*v_desired[1]
+        target_pos=np.array([x_foot,y_foot])
+        #Angle
+        target_angle=angle+np.clip(desired_angle_delta,-max_turn,max_turn)
+        R=np.array([[np.cos(angle),-np.sin(angle)],[np.sin(angle),np.cos(angle)]])
+        target_pos=hip_pos+R@target_pos
+        return target_pos,target_angle
+
+
+    def nominal_footstep_polygons(self,mj_model,mj_data,hip_pos:np.ndarray,v_current:np.ndarray,v_desired:np.ndarray,k:np.ndarray,
+                                    s:int,N:int,z_start:float,angle:float,desired_angle_delta:float,max_turn:float)->list:
+
+            polygons=[]
+            target_pos,target_angle=self.process_step(mj_model,mj_data,hip_pos,v_current,v_desired,k,s,desired_angle_delta,angle,z_start)
+            polygons.append([target_pos[0]-self.sole_length_x/2,target_pos[0]+self.sole_length_x/2,
+            target_pos[1]-self.sole_width_y/2,target_pos[1]+self.sole_width_y/2])
+            pos=target_pos[:2]
+            for i in range(1,N):
+                s=-s  
+                pos,angle=self.nominal_footstep(pos,v_desired,s,0,angle,max_turn)
+                polygons.append([pos[0]-self.sole_length_x/2,pos[0]+self.sole_length_x/2,
+                    pos[1]-self.sole_width_y/2,pos[1]+self.sole_width_y/2])
+                
+            return polygons
