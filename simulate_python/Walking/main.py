@@ -39,9 +39,12 @@ shared_plan = {"next_foot_pose": None,"target_angle": 0.0,"com_tr": None,"zmp_tr
 
 def PlannerThread():
 
-    footstep_gen=FootstepGenerator(step_duration=0.4)
+    footstep_gen=FootstepGenerator("g1_config.yaml")
     state_estimator=StateEstimator(mj_model, mj_data)
     # mpc_planner = MPCPlanner()
+
+    # Get the ids of the footstep markers. in the schene xml i placed 8 of them
+    step_ids = [mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_SITE, f"step_{i}") for i in range(8)]
 
     while viewer.is_running():
         start_time = time.perf_counter()
@@ -69,6 +72,11 @@ def PlannerThread():
         shared_plan["target_angle"] = target_angle
         # shared_plan["com_tr"] = com_traj
         # shared_plan["zmp_tr"] = zmp_traj
+
+        # show a marker at target pos
+        print(target_pos) # it pronts nothing as of now, thats why i dont see my marker
+        mj_model.site_pos[step_0_id] = target_pos
+
         locker.release()
 
         # Regulate planner frequency 

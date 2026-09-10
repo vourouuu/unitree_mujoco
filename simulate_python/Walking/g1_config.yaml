@@ -1,0 +1,12 @@
+
+robot_name: g1
+
+step_duration: 0.4 #took that from main.py. the rest are from get measurements
+step_width: 0.18
+min_width: 0.09
+max_reach: 0.5
+max_turn: 0.35
+sole_length_x: 0.067
+sole_width_y: 0.075
+hip_range: [-2.5307, 2.8798]
+knee_range: [-0.087267, 2.8798]

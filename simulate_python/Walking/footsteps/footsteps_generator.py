@@ -1,17 +1,21 @@
 import numpy as np
 import mujoco
+import yaml
+
 class FootstepGenerator:
-    def __init__(self,step_duration:float,step_width:float=0.18,max_turn:float=0.35,max_reach:float=0.5,min_width:float=0.09,
-    sole_length_x:float=0.067,sole_width_y:float=0.075,hip_range=[-2.5307,2.8798],knee_range=[-0.087267,2.8798]):
-        self.T=step_duration
-        self.w=step_width
-        self.max_reach=max_reach
-        self.min_width=min_width
-        self.max_turn=max_turn
-        self.sole_length_x=sole_length_x
-        self.sole_width_y=sole_width_y
-        self.hip_range=hip_range
-        self.knee_range=knee_range
+    def __init__(self, config_path: str):
+        with open(config_path, 'r') as file:
+            config = yaml.safe_load(file)
+
+        self.T = config['step_duration']
+        self.w = config['step_width']
+        self.max_reach = config['max_reach']
+        self.min_width = config['min_width']
+        self.max_turn = config['max_turn']
+        self.sole_length_x = config['sole_length_x']
+        self.sole_width_y = config['sole_width_y']
+        self.hip_range = config['hip_range']
+        self.knee_range = config['knee_range']
 
     def get_measurements(self,mj_model,mj_data):
         left_foot_id=mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "left_ankle_roll_link")
