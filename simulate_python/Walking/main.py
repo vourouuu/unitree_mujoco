@@ -39,7 +39,7 @@ shared_plan = {"next_foot_pose": None,"target_angle": 0.0,"com_tr": None,"zmp_tr
 
 def PlannerThread():
 
-    footstep_gen=FootstepGenerator("g1_config.yaml")
+    footstep_gen=FootstepGenerator("Walking/g1_config.yaml")
     state_estimator=StateEstimator(mj_model, mj_data)
     # mpc_planner = MPCPlanner()
 
@@ -75,7 +75,7 @@ def PlannerThread():
 
         # show a marker at target pos
         print(target_pos) # it pronts nothing as of now, thats why i dont see my marker
-        mj_model.site_pos[step_0_id] = target_pos
+        mj_model.site_pos[step_ids[0]] = target_pos
 
         locker.release()
 
