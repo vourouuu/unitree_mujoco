@@ -7,8 +7,8 @@ from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 from unitree_sdk2py_bridge import UnitreeSdk2Bridge, ElasticBand
 from Walking.footsteps.footsteps_generator import FootstepGenerator
 from Walking.estimation.state import StateEstimator
-# from Walking.planning.mpc import MPCPlanner
-# from Walking.planning.wbc import WBCController
+from Walking.planning.mpc import MPCPlanner
+#from Walking.planning.wbc import WBCController
 
 
 
@@ -41,8 +41,9 @@ def PlannerThread():
 
     footstep_gen=FootstepGenerator(step_duration=0.4)
     state_estimator=StateEstimator(mj_model, mj_data)
-    # mpc_planner = MPCPlanner()
-
+    mpc_planner = MPCPlanner(N=5,dt=0.002,z_com=mj_data.subtree_com[0][2])#check actual z_com
+    s=1
+    current_angle=0
     while viewer.is_running():
         start_time = time.perf_counter()
         locker.acquire()
@@ -51,24 +52,35 @@ def PlannerThread():
         
         hip_body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "left_hip_pitch_link")
         hip_pos = mj_data.xpos[hip_body_id].copy()
+        com_pos=mj_data.subtree_com[0]
+        com_vel=current_state["base_vel"][:3]
+        omega=mpc_planner.omega
+        xi_meas=com_pos[:2]+com_vel[:2]/ omega
         locker.release()
 
         # Compute footsteps and trajectories 
         v_current = current_state["base_vel"][:2]
         v_desired=np.array([0.2,0])
         k_feedback=np.array([0.05,0.05])
-        
-        target_pos,target_angle = footstep_gen.process_step(mj_model, mj_data, hip_pos[:2], v_current, 
-        v_desired, k_feedback, s=1, desired_angle_delta=0, angle=0, z_start=1)
-        
-        # com_traj, zmp_traj = mpc_planner.compute_trajectory(target_pos)
+
+        support_polys = footstep_gen.nominal_footstep_polygons(mj_model, mj_data, hip_pos[:2],v_current,v_desired, 
+            k_feedback,s,mpc_planner.N,0,current_angle,0,footstep_gen.max_turn)
+
+
+        target_pos =np.array([0.5*(support_polys[0][0]+support_polys[0][1]),
+            0.5*(support_polys[0][2]+support_polys[0][3]),0])
+        target_angle = current_angle
+
+        traj = np.array([[0.5*(p[0]+p[1]),0.5*(p[2]+p[3])] for p in support_polys])
+        com_traj, opt_zmp = mpc_planner.compute_trajectory(xi_meas,traj, support_polys)
+
 
         # Update shared plan safely
         locker.acquire()
         shared_plan["next_foot_pose"] = target_pos
         shared_plan["target_angle"] = target_angle
-        # shared_plan["com_tr"] = com_traj
-        # shared_plan["zmp_tr"] = zmp_traj
+        shared_plan["com_tr"] = com_traj
+        shared_plan["zmp_tr"] = opt_zmp
         locker.release()
 
         # Regulate planner frequency 
@@ -87,8 +99,7 @@ def SimulationThread():
         unitree.PrintSceneInformation()
 
     state_estimator=StateEstimator(mj_model, mj_data)
-    l_shoulder_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left_shoulder_pitch")
-    r_shoulder_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, "right_shoulder_pitch")
+    #wbc_controller=WBCController(mj_model, mj_data, ssp_duration=0.4, dsp_duration=0.1, dt=config.SIMULATE_DT)
     t0 = time.perf_counter()
 
     while viewer.is_running():
@@ -102,13 +113,20 @@ def SimulationThread():
         #Fetch plan
         current_foot_target = shared_plan["next_foot_pose"]
         current_angle_target = shared_plan["target_angle"]
+        com_trajectory = shared_plan["com_tr"]
+        zmp_trajectory = shared_plan["zmp_tr"]
 
+        com_target = com_trajectory[0] if com_trajectory is not None else None
+        zmp_target = zmp_trajectory[0] if zmp_trajectory is not None else None
+        '''torques = wbc_controller.compute_torques(
+            current_state,
+            com_target=com_target,
+            foot_target=current_foot_target,
+            angle_target=current_angle_target,
+            zmp_target=zmp_target
+        )'''
+        mj_data.ctrl[:] = torques
 
-        target_pos = -50 * math.sin(2*math.pi*elapsed) 
-        if l_shoulder_id != -1:
-            mj_data.ctrl[l_shoulder_id] = target_pos
-        if r_shoulder_id != -1:
-            mj_data.ctrl[r_shoulder_id] = -target_pos  
 
         if config.ENABLE_ELASTIC_BAND:
             if elastic_band.enable:
