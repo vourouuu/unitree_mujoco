@@ -8,7 +8,7 @@ from unitree_sdk2py_bridge import UnitreeSdk2Bridge, ElasticBand
 from Walking.footsteps.footsteps_generator import FootstepGenerator
 from Walking.estimation.state import StateEstimator
 from Walking.planning.mpc import MPCPlanner
-#from Walking.planning.wbc import WBCController
+from Walking.planning.wbc import WBCController
 
 
 
@@ -16,18 +16,7 @@ locker = threading.Lock()
 
 mj_model = mujoco.MjModel.from_xml_path(config.ROBOT_SCENE)
 mj_data = mujoco.MjData(mj_model)
-
-if config.ENABLE_ELASTIC_BAND:
-    elastic_band = ElasticBand()
-    if config.ROBOT == "h1" or config.ROBOT == "g1":
-        band_attached_link = mj_model.body("torso_link").id
-    else:
-        band_attached_link = mj_model.body("base_link").id
-    viewer = mujoco.viewer.launch_passive(
-        mj_model, mj_data, key_callback=elastic_band.MujuocoKeyCallback
-    )
-else:
-    viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
+viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
 #physics time
 mj_model.opt.timestep = config.SIMULATE_DT
 #actuators from xml 29
@@ -93,18 +82,16 @@ def SimulationThread():
     global mj_data, mj_model
     ChannelFactoryInitialize(config.DOMAIN_ID, config.INTERFACE)
     unitree = UnitreeSdk2Bridge(mj_model, mj_data)
-    if config.USE_JOYSTICK:
-        unitree.SetupJoystick(device_id=0, js_type=config.JOYSTICK_TYPE)
-    if config.PRINT_SCENE_INFORMATION:
-        unitree.PrintSceneInformation()
 
     state_estimator=StateEstimator(mj_model, mj_data)
-    #wbc_controller=WBCController(mj_model, mj_data, ssp_duration=0.4, dsp_duration=0.1, dt=config.SIMULATE_DT)
+    wbc_controller=WBCController(mj_model, mj_data, ssp_duration=0.4, dsp_duration=0.1, dt=config.SIMULATE_DT)
     t0 = time.perf_counter()
 
     while viewer.is_running():
         step_start = time.perf_counter()
         locker.acquire()
+
+
         
         current_state=state_estimator.update()
 
@@ -115,31 +102,28 @@ def SimulationThread():
         current_angle_target = shared_plan["target_angle"]
         com_trajectory = shared_plan["com_tr"]
         zmp_trajectory = shared_plan["zmp_tr"]
+        if com_trajectory is None:
+            com_target=None
+        else:
+            com_target = com_trajectory[0]
+        if zmp_trajectory is None:
+            zmp_target=None
+        else:
+            zmp_target = zmp_trajectory[0]
 
-        com_target = com_trajectory[0] if com_trajectory is not None else None
-        zmp_target = zmp_trajectory[0] if zmp_trajectory is not None else None
-        '''torques = wbc_controller.compute_torques(
+        # com_measured = mj_data.subtree_com[0].copy() 
+        # print(f"[CoM Check] Measured: {com_measured} | Target: {com_target}")
+        torques = wbc_controller.compute_torques(
             current_state,
             com_target=com_target,
             foot_target=current_foot_target,
-            angle_target=current_angle_target,
-            zmp_target=zmp_target
-        )'''
+            angle_target=current_angle_target)
         mj_data.ctrl[:] = torques
 
-
-        if config.ENABLE_ELASTIC_BAND:
-            if elastic_band.enable:
-                mj_data.xfrc_applied[band_attached_link, :3] = elastic_band.Advance(
-                    mj_data.qpos[:3], mj_data.qvel[:3]
-                )
-                
         mujoco.mj_step(mj_model, mj_data)
         locker.release()
         
-        time_until_next_step = mj_model.opt.timestep - (
-            time.perf_counter() - step_start
-        )
+        time_until_next_step=mj_model.opt.timestep-(time.perf_counter() - step_start)
         if time_until_next_step > 0:
             time.sleep(time_until_next_step)
 
