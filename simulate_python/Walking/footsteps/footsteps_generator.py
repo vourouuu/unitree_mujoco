@@ -27,34 +27,42 @@ class FootstepGenerator:
         leg_length=float(np.linalg.norm(mj_data.xpos[hip_body_id] - mj_data.xpos[left_foot_id]))
         #assumption
         max_reach=leg_length*0.50
-        min_width=sole_width_y*1.2
+        min_width=sole_width_y
 
         return leg_length,sole_length_x,sole_width_y,hip_range,knee_range,max_reach,min_width
+    def generate_footstep(self, hip_pos: np.ndarray, v_current: np.ndarray, v_desired: np.ndarray, k: np.ndarray, s: int,
+                            desired_angle_delta: float, angle: float, max_turn: float) -> tuple[np.ndarray, float]:
+            # Force forward step progression using desired velocity when v_current[0] is near zero or negative
+            x_vel_use = max(v_current[0], v_desired[0])
+            x_foot = self.T / 2 * x_vel_use + k[0] * (x_vel_use - v_desired[0])
+            
+            if x_foot < 0.1:
+                x_foot = 0.15
 
-    def generate_footstep(self,hip_pos:np.ndarray,v_current:np.ndarray,v_desired:np.ndarray,k:np.ndarray,s:int,
-                        desired_angle_delta:float,angle:float,max_turn:float)->tuple[np.ndarray, float]:
-        # s=1 or s=-1 for left or right
-        x_foot=self.T/2*v_current[0]+k[0]*(v_current[0]-v_desired[0])
-        y_foot=s*self.w/2+self.T/2*v_current[1]+k[1]*(v_current[1]-v_desired[1])
-        target_pos=np.array([x_foot,y_foot])
-        #Angle
-        target_angle=angle+np.clip(desired_angle_delta,-max_turn,max_turn)
-        R=np.array([[np.cos(angle),-np.sin(angle)],[np.sin(angle),np.cos(angle)]])
-        target_pos=hip_pos+R@target_pos
-        return target_pos, target_angle
+            # Strictly use nominal width based on side 's' (1 for left, -1 for right) 
+            # and ignore minor lateral velocity noise to prevent unwanted Y drift
+            y_foot = s * (self.w / 2.0)
+            
+            target_pos = np.array([x_foot, y_foot])
+            
+            target_angle = angle + np.clip(desired_angle_delta, -max_turn, max_turn)
+            R = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+            target_pos = hip_pos[:2] + R @ target_pos
+            return np.array([target_pos[0], target_pos[1]]), target_angle
 
-    def project_kinematics(self,target_pos:np.ndarray,hip_pos:np.ndarray,s:int,max_step:float,min_width:float)->np.ndarray:
-        #Limit maximum reach circular clamping
-        if np.linalg.norm(target_pos-hip_pos)>max_step:
-            target_pos=hip_pos+((target_pos-hip_pos)/np.linalg.norm(target_pos-hip_pos))* max_step
+    def project_kinematics(self, target_pos: np.ndarray, hip_pos: np.ndarray, s: int, max_step: float, min_width: float) -> np.ndarray:
+        # Limit maximum reach circular clamping
+        if np.linalg.norm(target_pos - hip_pos) > max_step:
+            target_pos = hip_pos + ((target_pos - hip_pos) / np.linalg.norm(target_pos - hip_pos)) * max_step
 
-        # Prevent lateral clamping
-        # If s=1 y must be positive else negative
-        dy_relative=target_pos[1]-hip_pos[1]
-        if s==1 and dy_relative<min_width/2:
-            target_pos[1]=hip_pos[1]+min_width/2
-        elif dy_relative>-min_width/2:
-            target_pos[1]=hip_pos[1]-min_width/2
+        # Corrected lateral clamping based on side s (1 for left, -1 for right)
+        dy_relative = target_pos[1] - hip_pos[1]
+        if s == 1:
+            if dy_relative < min_width / 2:
+                target_pos[1] = hip_pos[1] + min_width / 2
+        else:
+            if dy_relative > -min_width / 2:
+                target_pos[1] = hip_pos[1] - min_width / 2
 
         return target_pos
 
@@ -89,17 +97,18 @@ class FootstepGenerator:
         target_pos=np.array([target_pos[0],target_pos[1],target_z])
         return target_pos,target_angle
 
-    def nominal_footstep(self,hip_pos:np.ndarray,v_desired:np.ndarray,s:int,
-                        desired_angle_delta:float,angle:float,max_turn:float)->tuple[np.ndarray, float]:
-        # s=1 or s=-1 for left or right
-        x_foot=self.T/2*v_desired[0]
-        y_foot=s*self.w/2+self.T/2*v_desired[1]
-        target_pos=np.array([x_foot,y_foot])
-        #Angle
-        target_angle=angle+np.clip(desired_angle_delta,-max_turn,max_turn)
-        R=np.array([[np.cos(angle),-np.sin(angle)],[np.sin(angle),np.cos(angle)]])
-        target_pos=hip_pos+R@target_pos
-        return target_pos,target_angle
+    def nominal_footstep(self, prev_foot_pos: np.ndarray, v_desired: np.ndarray, s: int,
+                            desired_angle_delta: float, angle: float, max_turn: float) -> tuple[np.ndarray, float]:    
+            x_foot = self.T / 2 * v_desired[0]  
+            # Shift the FULL width because this step is calculated relative to the OPPOSITE foot
+            y_foot = s * self.w  
+            target_pos = np.array([x_foot, y_foot])
+            target_angle = angle + np.clip(desired_angle_delta, -max_turn, max_turn)
+            R = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+            
+            # Add to the previous foot's position
+            target_pos = prev_foot_pos[:2] + R @ target_pos
+            return np.array([target_pos[0], target_pos[1]]), target_angle
 
 
     def nominal_footstep_polygons(self,mj_model,mj_data,hip_pos:np.ndarray,v_current:np.ndarray,v_desired:np.ndarray,k:np.ndarray,
