@@ -32,16 +32,12 @@ class FootstepGenerator:
         return leg_length,sole_length_x,sole_width_y,hip_range,knee_range,max_reach,min_width
     def generate_footstep(self, hip_pos: np.ndarray, v_current: np.ndarray, v_desired: np.ndarray, k: np.ndarray, s: int,
                             desired_angle_delta: float, angle: float, max_turn: float) -> tuple[np.ndarray, float]:
-            # Force forward step progression using desired velocity when v_current[0] is near zero or negative
-            x_vel_use = max(v_current[0], v_desired[0])
-            x_foot = self.T / 2 * x_vel_use + k[0] * (x_vel_use - v_desired[0])
-            
-            if x_foot < 0.1:
-                x_foot = 0.15
-
-            # Strictly use nominal width based on side 's' (1 for left, -1 for right) 
-            # and ignore minor lateral velocity noise to prevent unwanted Y drift
-            y_foot = s * (self.w / 2.0)
+            if v_current[0]==0:
+                v_current[0]=v_desired[0]
+            x_foot = self.T / 2 *v_current[0] + k[0] * (v_current[0]- v_desired[0])
+            if x_foot<0.1:
+                x_foot=0.15
+            y_foot=s*(self.w/2)
             
             target_pos = np.array([x_foot, y_foot])
             
@@ -100,13 +96,12 @@ class FootstepGenerator:
     def nominal_footstep(self, prev_foot_pos: np.ndarray, v_desired: np.ndarray, s: int,
                             desired_angle_delta: float, angle: float, max_turn: float) -> tuple[np.ndarray, float]:    
             x_foot = self.T / 2 * v_desired[0]  
-            # Shift the FULL width because this step is calculated relative to the OPPOSITE foot
+            # Shift because step is calculated relative to the  foot
             y_foot = s * self.w  
             target_pos = np.array([x_foot, y_foot])
             target_angle = angle + np.clip(desired_angle_delta, -max_turn, max_turn)
             R = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
-            
-            # Add to the previous foot's position
+
             target_pos = prev_foot_pos[:2] + R @ target_pos
             return np.array([target_pos[0], target_pos[1]]), target_angle
 

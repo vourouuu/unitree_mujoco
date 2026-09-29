@@ -34,7 +34,7 @@ class MPCPlanner:
         l = np.zeros(self.n_in)
         u = np.zeros(self.n_in)
 
-        # 1. Cost Matrix Construction
+        #Cost Matrix Construction
         for i in range(self.N):
             xi_i = i * 2
             zmp_i = self.N * 2 + i * 2
@@ -50,7 +50,7 @@ class MPCPlanner:
                 P[zmp_i:zmp_i+2, next_zmp_i:next_zmp_i+2] -= self.R_zmp * np.eye(2)
                 P[next_zmp_i:next_zmp_i+2, zmp_i:zmp_i+2] -= self.R_zmp * np.eye(2)
 
-        # 2. Discrete DCM Dynamics (xi_k = a * xi_k-1 + (1-a) * zmp_k-1)
+        #Discrete DCM Dynamics (xi_k = a * xi_k-1 + (1-a) * zmp_k-1)
         for i in range(self.N):
             eq_i = i * 2
             xi_i = i * 2
@@ -59,7 +59,6 @@ class MPCPlanner:
             A[eq_i:eq_i+2, xi_i:xi_i+2] = np.eye(2)
             
             if i == 0:
-                # First step: xi_0 = a * xi_meas + (1-a) * zmp_meas
                 b[eq_i:eq_i+2] = self.a * xi_meas[:2]
                 A[eq_i:eq_i+2, zmp_i:zmp_i+2] = -(1.0 - self.a) * np.eye(2)
             else:
@@ -68,11 +67,11 @@ class MPCPlanner:
                 A[eq_i:eq_i+2, prev_xi_i:prev_xi_i+2] = -self.a * np.eye(2)
                 A[eq_i:eq_i+2, prev_zmp_i:prev_zmp_i+2] = -(1.0 - self.a) * np.eye(2)
 
-        # 3. Foot Support Polygon Inequalities
+        #Foot Support Polygon Inequalities
         for i in range(self.N):
             in_i = i * 4
             zmp_i = self.N * 2 + i * 2
-            foot = support_polys[i]  # [x_min, x_max, y_min, y_max]
+            foot = support_polys[i]
             
             C[in_i:in_i+4, zmp_i:zmp_i+2] = np.array([[1, 0], [-1, 0], [0, 1], [0, -1]])
             u[in_i:in_i+4] = np.array([foot[1], -foot[0], foot[3], -foot[2]])
@@ -86,7 +85,7 @@ class MPCPlanner:
         opt_xi = sol[:self.N * 2].reshape((self.N, 2))
         opt_zmp = sol[self.N * 2:].reshape((self.N, 2))
         
-        # 4. Forward CoM Integration
+        #Forward CoM Integration
         com_traj = np.zeros((self.N, 3))
         curr_com = com_meas[:2].copy()
         

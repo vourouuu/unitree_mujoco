@@ -21,12 +21,12 @@ num_motor_ = mj_model.nu
 dim_motor_sensor_ = 3 * num_motor_
 
 time.sleep(0.2)
-# Added 'future_steps' to shared_plan
+
 shared_plan = {"next_foot_pose": None, "target_angle": 0.0, "com_tr": None, "zmp_tr": None, 'side': 0, 'future_steps': []}
 
 def update_footprints(model, data, future_steps):
     """Updates current foot pos and future planned steps."""
-    # 1. Update Current Feet
+
     left_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "left_support_poly")
     right_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "right_support_poly")
 
@@ -43,15 +43,13 @@ def update_footprints(model, data, future_steps):
         model.geom_pos[right_geom_id] = [right_pos[0], right_pos[1], 0.002]
         model.geom_quat[right_geom_id] = data.xquat[right_foot_id]
 
-    # 2. Update Future Planned Steps
+
     for i in range(10): # Matches the 10 step_X geoms in XML
         geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, f"step_{i}")
         if geom_id != -1:
             if future_steps is not None and i < len(future_steps):
-                # Place step visually on the ground
                 model.geom_pos[geom_id] = [future_steps[i][0], future_steps[i][1], 0.002]
             else:
-                # Hide unused steps underground
                 model.geom_pos[geom_id] = [0, 0, -1]
 
 def PlannerThread():
@@ -76,49 +74,48 @@ def PlannerThread():
         
         base_pos = mj_data.xpos[pelvis_id].copy()
         
-        # --- LATERAL SWAY FIX ---
-        # Anchor the lateral center of the trail to the stationary stance foot
-        stance_foot_id = right_foot_id if current_side == 0 else left_foot_id
+        if current_side==0:
+            stance_foot_id=right_foot_id
+        else:
+            stance_foot_id=left_foot_id
+
         stance_pos = mj_data.xpos[stance_foot_id][:2]
         
-        # Calculate the ideal kinematic center offset from the stance foot
-        offset = np.array([0.0, s * (footstep_gen.w / 2.0)])
+        offset = np.array([0.,s*(footstep_gen.w/2)])
         R_angle = np.array([[np.cos(current_angle), -np.sin(current_angle)], 
                             [np.sin(current_angle), np.cos(current_angle)]])
-        center_anchor = stance_pos + R_angle @ offset
+        center_anchor=stance_pos+R_angle@offset
         
-        # Project actual pelvis for forward progress, and anchor for lateral stability
+
         forward_vec = np.array([np.cos(current_angle), np.sin(current_angle)])
         lateral_vec = np.array([-np.sin(current_angle), np.cos(current_angle)])
         nominal_base_pos = (np.dot(base_pos[:2], forward_vec) * forward_vec + 
                             np.dot(center_anchor, lateral_vec) * lateral_vec)
-        # ------------------------
         
-        com_pos = mj_data.subtree_com[0].copy()
-        com_vel = current_state["base_vel"][:3]
+        com_pos=mj_data.subtree_com[0].copy()
+        com_vel=current_state["base_vel"][:3]
         
-        omega = mpc_planner.omega
-        xi_meas = com_pos[:2] + com_vel[:2] / omega
+        omega=mpc_planner.omega
+        xi_meas=com_pos[:2]+com_vel[:2]/omega
         locker.release()
         
-        v_current = current_state["base_vel"][:2]
-        v_desired = np.array([0.4, 0.0])
-        k_feedback = np.array([0.05, 0.05])
+        v_current=current_state["base_vel"][:2]
+        v_desired=np.array([0.4,0])
+        k_feedback=np.array([0.05,0.05])
 
-        # Pass the stabilized nominal_base_pos instead of base_pos[:2]
+
         support_polys = footstep_gen.nominal_footstep_polygons(
             mj_model, mj_data, nominal_base_pos, v_current, v_desired, 
-            k_feedback, s, mpc_planner.N, 0, current_angle, 0, footstep_gen.max_turn
-        )
+            k_feedback, s, mpc_planner.N, 0, current_angle, 0, footstep_gen.max_turn)
 
         # Extract centers of all future polygons for visualization
         future_centers = []
         for p in support_polys:
-            cx = 0.5 * (p[0] + p[1])
-            cy = 0.5 * (p[2] + p[3])
+            cx=0.5*(p[0]+p[1])
+            cy=0.5*(p[2]+p[3])
             future_centers.append([cx, cy])
 
-        target_pos = np.array([future_centers[0][0], future_centers[0][1], 0.0])
+        target_pos= np.array([future_centers[0][0], future_centers[0][1], 0.0])
         target_angle = current_angle
 
         traj = np.array(future_centers)
@@ -157,6 +154,7 @@ def SimulationThread():
         shared_plan["current_side"] = wbc_controller.side
         locker.release()
 
+        # CoM target interpolation
         if com_trajectory is None or len(com_trajectory) == 0:
             com_target = None
         else:
@@ -164,15 +162,17 @@ def SimulationThread():
             horizon_idx = int(fraction * (len(com_trajectory) - 1))
             com_target = com_trajectory[horizon_idx]
 
+        # ZMP target
         if zmp_trajectory is None or len(zmp_trajectory) == 0:
             zmp_target = None
         else:
             zmp_target = zmp_trajectory[0]
 
-        swing_target = current_foot_target.copy() if current_foot_target is not None else None
-        if swing_target is not None:
-            step_height = 0.06 
-            swing_target[2] += step_height * (4 * fraction * (1 - fraction))
+        # Swing foot target
+        if wbc_controller.state==1 and current_foot_target is not None:
+            swing_target=current_foot_target.copy()
+        else:
+            swing_target=None
 
         torques = wbc_controller.compute_torques(
             current_state,
