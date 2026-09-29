@@ -195,6 +195,47 @@ def PhysicsViewerThread():
         locker.acquire()
         future_steps = shared_plan.get("future_steps", [])
         update_footprints(mj_model, mj_data, future_steps)
+
+
+        # code to draw zmp trajectories
+        zmp_traj = shared_plan.get("zmp_tr")
+        com_traj = shared_plan.get("com_tr")
+
+        geom_idx = 0  #i am counting how many geoms i am using
+        max_geoms = viewer.user_scn.maxgeom
+
+        #COM spheres dont show because they are almost on top of eachother and inside the bot. we might not implement this at all.
+        if com_traj is not None:
+            com_z = mj_data.subtree_com[0][2] 
+
+            for pt in com_traj:
+                print(pt, geom_idx)
+                if geom_idx >= max_geoms: break
+                mujoco.mjv_initGeom(
+                    viewer.user_scn.geoms[geom_idx],
+                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                    size=[0.015, 0, 0],
+                    pos=[pt[0], pt[1], com_z],
+                    mat=np.eye(3).flatten(),
+                    rgba=[0.0, 0.0, 1.0, 1.0] # Blue
+                )
+                geom_idx += 1
+
+        # 3. Draw ZMP Trajectory
+        if zmp_traj is not None:
+            for pt in zmp_traj:
+                if geom_idx >= max_geoms: break
+                mujoco.mjv_initGeom(
+                    viewer.user_scn.geoms[geom_idx],
+                    type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                    size=[0.015, 0, 0],        # 1.5cm sphere
+                    pos=[pt[0], pt[1], 0.02],
+                    mat=np.eye(3).flatten(),
+                    rgba=[1.0, 0.0, 0.0, 1.0]  # Red
+                )
+                geom_idx += 1
+        viewer.user_scn.ngeom = geom_idx
+
         viewer.sync()
         locker.release()
         time.sleep(config.VIEWER_DT)
