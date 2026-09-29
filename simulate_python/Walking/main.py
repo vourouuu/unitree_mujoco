@@ -16,13 +16,43 @@ mj_model = mujoco.MjModel.from_xml_path(config.ROBOT_SCENE)
 mj_data = mujoco.MjData(mj_model)
 
 viewer = mujoco.viewer.launch_passive(mj_model, mj_data)
-# physics time
 mj_model.opt.timestep = config.SIMULATE_DT
 num_motor_ = mj_model.nu
 dim_motor_sensor_ = 3 * num_motor_
 
 time.sleep(0.2)
-shared_plan = {"next_foot_pose": None, "target_angle": 0.0, "com_tr": None, "zmp_tr": None,'side':0}
+# Added 'future_steps' to shared_plan
+shared_plan = {"next_foot_pose": None, "target_angle": 0.0, "com_tr": None, "zmp_tr": None, 'side': 0, 'future_steps': []}
+
+def update_footprints(model, data, future_steps):
+    """Updates current foot pos and future planned steps."""
+    # 1. Update Current Feet
+    left_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "left_support_poly")
+    right_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "right_support_poly")
+
+    left_foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "left_ankle_roll_link")
+    right_foot_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "right_ankle_roll_link")
+
+    if left_geom_id != -1 and left_foot_id != -1:
+        left_pos = data.xpos[left_foot_id]
+        model.geom_pos[left_geom_id] = [left_pos[0], left_pos[1], 0.002] 
+        model.geom_quat[left_geom_id] = data.xquat[left_foot_id]
+
+    if right_geom_id != -1 and right_foot_id != -1:
+        right_pos = data.xpos[right_foot_id]
+        model.geom_pos[right_geom_id] = [right_pos[0], right_pos[1], 0.002]
+        model.geom_quat[right_geom_id] = data.xquat[right_foot_id]
+
+    # 2. Update Future Planned Steps
+    for i in range(10): # Matches the 10 step_X geoms in XML
+        geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, f"step_{i}")
+        if geom_id != -1:
+            if future_steps is not None and i < len(future_steps):
+                # Place step visually on the ground
+                model.geom_pos[geom_id] = [future_steps[i][0], future_steps[i][1], 0.002]
+            else:
+                # Hide unused steps underground
+                model.geom_pos[geom_id] = [0, 0, -1]
 
 def PlannerThread():
     footstep_gen = FootstepGenerator(step_duration=0.4)
@@ -30,20 +60,40 @@ def PlannerThread():
     mpc_planner = MPCPlanner(N=15, dt=0.002, z_com=0.72)
     current_angle = 0.0
     
-    # Get the pelvis body ID for root tracking
     pelvis_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
+    
+    # Pre-fetch foot IDs
+    left_foot_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "left_ankle_roll_link")
+    right_foot_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, "right_ankle_roll_link")
     
     while viewer.is_running():
         start_time = time.perf_counter()
         
         locker.acquire()
         current_state = state_estimator.update()
-        
-        # Read the current active swing side from the WBC controller
         current_side = shared_plan.get("current_side", 0)
+        s = 1 if current_side == 0 else -1
         
-        # Track the center of the robot rather than a specific hip link
         base_pos = mj_data.xpos[pelvis_id].copy()
+        
+        # --- LATERAL SWAY FIX ---
+        # Anchor the lateral center of the trail to the stationary stance foot
+        stance_foot_id = right_foot_id if current_side == 0 else left_foot_id
+        stance_pos = mj_data.xpos[stance_foot_id][:2]
+        
+        # Calculate the ideal kinematic center offset from the stance foot
+        offset = np.array([0.0, s * (footstep_gen.w / 2.0)])
+        R_angle = np.array([[np.cos(current_angle), -np.sin(current_angle)], 
+                            [np.sin(current_angle), np.cos(current_angle)]])
+        center_anchor = stance_pos + R_angle @ offset
+        
+        # Project actual pelvis for forward progress, and anchor for lateral stability
+        forward_vec = np.array([np.cos(current_angle), np.sin(current_angle)])
+        lateral_vec = np.array([-np.sin(current_angle), np.cos(current_angle)])
+        nominal_base_pos = (np.dot(base_pos[:2], forward_vec) * forward_vec + 
+                            np.dot(center_anchor, lateral_vec) * lateral_vec)
+        # ------------------------
+        
         com_pos = mj_data.subtree_com[0].copy()
         com_vel = current_state["base_vel"][:3]
         
@@ -51,27 +101,27 @@ def PlannerThread():
         xi_meas = com_pos[:2] + com_vel[:2] / omega
         locker.release()
         
-        # Map controller side (0=Left Swing, 1=Right Swing) to multiplier (1=Left, -1=Right)
-        s = 1 if current_side == 0 else -1
-
         v_current = current_state["base_vel"][:2]
         v_desired = np.array([0.4, 0.0])
         k_feedback = np.array([0.05, 0.05])
 
-        # Generate support polygons relative to the pelvis center
+        # Pass the stabilized nominal_base_pos instead of base_pos[:2]
         support_polys = footstep_gen.nominal_footstep_polygons(
-            mj_model, mj_data, base_pos[:2], v_current, v_desired, 
+            mj_model, mj_data, nominal_base_pos, v_current, v_desired, 
             k_feedback, s, mpc_planner.N, 0, current_angle, 0, footstep_gen.max_turn
         )
 
-        target_pos = np.array([
-            0.5 * (support_polys[0][0] + support_polys[0][1]),
-            0.5 * (support_polys[0][2] + support_polys[0][3]),
-            0.0
-        ])
+        # Extract centers of all future polygons for visualization
+        future_centers = []
+        for p in support_polys:
+            cx = 0.5 * (p[0] + p[1])
+            cy = 0.5 * (p[2] + p[3])
+            future_centers.append([cx, cy])
+
+        target_pos = np.array([future_centers[0][0], future_centers[0][1], 0.0])
         target_angle = current_angle
 
-        traj = np.array([[0.5 * (p[0] + p[1]), 0.5 * (p[2] + p[3])] for p in support_polys])
+        traj = np.array(future_centers)
         com_traj, opt_zmp = mpc_planner.compute_trajectory(com_pos, xi_meas, traj, support_polys)
 
         locker.acquire()
@@ -79,6 +129,7 @@ def PlannerThread():
         shared_plan["target_angle"] = target_angle
         shared_plan["com_tr"] = com_traj
         shared_plan["zmp_tr"] = opt_zmp
+        shared_plan["future_steps"] = future_centers
         locker.release()
 
         elapsed = time.perf_counter() - start_time
@@ -93,8 +144,7 @@ def SimulationThread():
 
     state_estimator = StateEstimator(mj_model, mj_data)
     wbc_controller = WBCController(mj_model, mj_data, ssp_duration=0.4, dsp_duration=0.1, dt=config.SIMULATE_DT)
-    t0 = time.perf_counter()
-
+    
     while viewer.is_running():
         step_start = time.perf_counter()
         
@@ -107,7 +157,6 @@ def SimulationThread():
         shared_plan["current_side"] = wbc_controller.side
         locker.release()
 
-        # Map phase progress safely across the N=15 horizon length
         if com_trajectory is None or len(com_trajectory) == 0:
             com_target = None
         else:
@@ -120,7 +169,6 @@ def SimulationThread():
         else:
             zmp_target = zmp_trajectory[0]
 
-        # Inject parabolic swing clearance (0.06m peak height)
         swing_target = current_foot_target.copy() if current_foot_target is not None else None
         if swing_target is not None:
             step_height = 0.06 
@@ -129,9 +177,10 @@ def SimulationThread():
         torques = wbc_controller.compute_torques(
             current_state,
             com_target=com_target,
-            foot_target=swing_target, # Pass the dynamically updated target
+            foot_target=swing_target,
             angle_target=current_angle_target
         )
+        
         locker.acquire()
         mj_data.ctrl[:] = torques
         mujoco.mj_step(mj_model, mj_data)
@@ -144,6 +193,8 @@ def SimulationThread():
 def PhysicsViewerThread():
     while viewer.is_running():
         locker.acquire()
+        future_steps = shared_plan.get("future_steps", [])
+        update_footprints(mj_model, mj_data, future_steps)
         viewer.sync()
         locker.release()
         time.sleep(config.VIEWER_DT)

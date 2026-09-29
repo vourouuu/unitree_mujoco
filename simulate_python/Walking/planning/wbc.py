@@ -61,20 +61,26 @@ class WBCController:
         np.fill_diagonal(self.reg[self.nv:2*self.nv, self.nv:2*self.nv], 1e-4)
         np.fill_diagonal(self.reg[2*self.nv:, 2*self.nv:], 1e-5)
 
-# Normalized Task Weights (Prevents ill-conditioned QP matrix)
-        self.w_contact = 10000.0   # Highest priority (rigid ground contact)
-        self.w_com = 1000.0        # Reduced so it doesn't fight the contact constraint
-        self.w_pelvis = 500.0
-        self.w_torso = 200.0
-        self.w_posture = 1.0       # Minimal interference
+        # Normalized Task Weights (Prevents ill-conditioned QP matrix)
+        self.w_contact = 20000.0
+        self.w_pelvis = 2000.0     # Increased from 500.0 to strictly dominate the swing task
+        self.w_torso = 1500.0      # Increased from 200.0 to keep the upper body rigid
+        self.w_com = 1000.0
+        self.w_posture = 1.0     # Minimal interference
+        
+        # Fading weights for swing trajectory
+        self.w_swing_base = 1000.0
+        self.w_swing_current = self.w_swing_base
 
         # Stable PD Gains (Prevents torque explosions)
         self.Kp_contact = 100.0
         self.Kd_contact = 20.0
         
         # Anisotropic CoM gains: Stiff enough to stand, soft enough to simulate
-        self.Kp_com = np.array([40.0, 40.0, 300.0]) 
-        self.Kd_com = np.array([15.0, 15.0, 50.0])
+        # Update in __init__:
+        # Increase Y-axis gain (index 1) from 40.0 / 15.0 to 150.0 / 30.0
+        self.Kp_com = np.array([40.0, 150.0, 300.0]) 
+        self.Kd_com = np.array([15.0, 30.0, 50.0])
         
         self.Kp_pelvis = 100.0
         self.Kd_pelvis = 20.0
@@ -84,11 +90,12 @@ class WBCController:
         self.Kd_posture = 10.0
 
         self.qp = proxsuite.proxqp.dense.QP(self.n_vars, self.n_eq, self.n_in)
+        self.qp.settings.max_iter = 500
         self.qp_init = False
         self.initialized = False
 
     def _setup_friction_cone(self):
-        mu = 0.6
+        mu = 0.8
         n = np.array([0, 0, 1])
         t1 = np.array([1, 0, 0])
         t2 = np.array([0, 1, 0])
@@ -175,6 +182,12 @@ class WBCController:
             mujoco.mj_comPos(self.model, self.data)
             self.com_initial_pos = self.data.subtree_com[0].copy()
             
+            # Lock the footstep target once at the beginning of DSP
+            if foot_target is not None and not np.allclose(foot_target[:2], 0.0):
+                self.dsp_target_foot_pos = np.array(foot_target, dtype=float)
+            else:
+                self.dsp_target_foot_pos = np.zeros(3) # Or fallback default position if needed
+
             self.contact_initial_pos = []
             for body_id in [self.left_ankle_id, self.right_ankle_id]:
                 for offset in self.contact_offsets:
@@ -185,7 +198,7 @@ class WBCController:
         mujoco.mj_kinematics(self.model, self.data)
         mujoco.mj_comPos(self.model, self.data)
 
-        # Print diagnostics for DSP
+        # Print diagnostics for DSP using the locked target foot position
         com_current = self.data.subtree_com[0].copy()
         com_des_debug = com_target.copy() if com_target is not None else self.com_initial_pos.copy()
         
@@ -202,7 +215,7 @@ class WBCController:
         print(f"  Target CoM: X={com_des_debug[0]:.3f}, Y={com_des_debug[1]:.3f}, Z={com_des_debug[2]:.3f}")
         print(f"  Left Sole Pos: X={left_sole_pos[0]:.3f}, Y={left_sole_pos[1]:.3f}, Z={left_sole_pos[2]:.3f} | Quat: {left_sole_quat}")
         print(f"  Right Sole Pos: X={right_sole_pos[0]:.3f}, Y={right_sole_pos[1]:.3f}, Z={right_sole_pos[2]:.3f} | Quat: {right_sole_quat}")
-        print(f"  Target Footstep: {foot_target}")
+        print(f"  Target Footstep: {self.dsp_target_foot_pos}")
         
         mujoco.mj_fullM(self.model, self.data, self.M)
         self.A[:, :] = 0
@@ -409,6 +422,7 @@ class WBCController:
             acc_des = self.Kp_contact * p_err - self.Kd_contact * v_contact
             self.t[row_idx:row_idx+3] = self.w_contact * acc_des
             row_idx += 3
+            
         jacr_stance = np.zeros((3, self.nv))
         mujoco.mj_jacBody(self.model, self.data, np.zeros((3, self.nv)), jacr_stance, stance_id)
         
@@ -417,13 +431,13 @@ class WBCController:
         mujoco.mju_mat2Quat(stance_quat, self.data.xmat[stance_id])
         
         err_rot_stance = np.zeros(3)
-        # Force the foot to strictly maintain a flat [1, 0, 0, 0] orientation
         mujoco.mju_subQuat(err_rot_stance, np.array([1.0, 0.0, 0.0, 0.0]), stance_quat)
         w_stance_curr_rot = 0.0 - (jacr_stance @ self.data.qvel)
         
         acc_des_stance_r = 500.0 * err_rot_stance + 50.0 * w_stance_curr_rot
         self.t[row_idx:row_idx+3] = self.w_contact * acc_des_stance_r
         row_idx += 3
+        
         # Zero-out swing foot contact forces
         for contact_idx in swing_indices:
             self.A[:, 2*self.nv + contact_idx*3 : 2*self.nv + (contact_idx+1)*3] = 0.0
@@ -431,6 +445,17 @@ class WBCController:
         # Swing Foot Position & Orientation Tasks
         s_phase = np.clip(self.phase_time / self.ssp_duration, 0.0, 1.0)
         ramp = np.sin(0.5 * np.pi * np.clip(s_phase / 0.2, 0.0, 1.0))
+
+        # --- Task Hierarchy Fading Logic ---
+        # Detect early touchdown (Z <= 0.038) in the second half of the swing phase
+        is_touchdown = swing_pos_current[2] <= 0.038 and self.phase_time > (self.ssp_duration * 0.5)
+        
+        if is_touchdown:
+            # Rapidly decay the weight by 200 per step (reaches 0 in ~25ms at dt=0.005)
+            self.w_swing_current = max(0.0, self.w_swing_current - 200.0)
+        else:
+            self.w_swing_current = self.w_swing_base * ramp
+        # -----------------------------------
 
         p_des_sw, v_des_sw, a_des_sw, quat_des_sw = self.swing(
             self.phase_time, self.swing_start_pos, self.swing_target_pos, self.ssp_duration,
@@ -441,14 +466,13 @@ class WBCController:
         jacr_sw = np.zeros((3, self.nv))
         mujoco.mj_jacBody(self.model, self.data, jacp_sw, jacr_sw, swing_id)
 
-        w_swing = 1000.0 * ramp  # Increased from 200.0 to force forward step progression
         v_sw_curr = jacp_sw @ self.data.qvel
         
         # Increased PD gains for the swing foot trajectory tracking
         acc_des_sw_p = a_des_sw + 400.0 * ramp * (p_des_sw - swing_pos_current) - 50.0 * (v_sw_curr - v_des_sw)
         
-        self.W[row_idx:row_idx+3, :self.nv] = w_swing * jacp_sw
-        self.t[row_idx:row_idx+3] = w_swing * acc_des_sw_p
+        self.W[row_idx:row_idx+3, :self.nv] = self.w_swing_current * jacp_sw
+        self.t[row_idx:row_idx+3] = self.w_swing_current * acc_des_sw_p
         row_idx += 3
 
         # Swing Foot Orientation Task (Flat landing)
@@ -461,10 +485,9 @@ class WBCController:
         # Increased rotational tracking stiffness and weight
         acc_des_sw_r = 500.0 * err_rot_sw + 50.0 * w_sw_curr_rot
         
-        self.W[row_idx:row_idx+3, :self.nv] = 1000.0 * jacr_sw  # Increased from 300.0
-        self.t[row_idx:row_idx+3] = 1000.0 * acc_des_sw_r
+        self.W[row_idx:row_idx+3, :self.nv] = self.w_swing_current * jacr_sw
+        self.t[row_idx:row_idx+3] = self.w_swing_current * acc_des_sw_r
         row_idx += 3
-
 
         # CoM Task
         jac_com = np.zeros((3, self.nv))
